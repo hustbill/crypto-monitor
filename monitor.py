@@ -1,56 +1,99 @@
-import ccxt
-import time
+"""Portfolio analytics for cryptocurrency holdings."""
+from decimal import Decimal, getcontext, ROUND_HALF_UP
 import requests
 
-# --- 配置区域 ---
-# 在 Telegram 搜索 @BotFather 获取 TOKEN，搜索 @getidsbot 获取 CHAT_ID
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+# 1. 配置与初始化
+getcontext().prec = 20
 
-# 你的调仓/止损逻辑配置
-WATCH_LIST = {
-    'BTC/USDT': {'target': 72000, 'stop': 64500},
-    'ETH/USDT': {'target': 2150,  'stop': 1950},
-    'XPL/USDT': {'target': 0.11,   'stop': 0.085}, # 2.25解锁前调仓点
-    'XCN/USDT': {'target': 0.0065, 'stop': 0.0048}
+COINGECKO_CONFIG = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "x-plus": "XPL",
+    "onyxcoin": "XCN",
 }
 
-def send_tg_msg(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+# 2. 业务逻辑层 (Pure Logic) - 易于单元测试
+def calculate_portfolio_metrics(portfolio: dict, api_prices: dict):
+    """Calculate portfolio value, cost, and profit metrics."""
+    results = []
+    total_cost = Decimal("0")
+    total_value = Decimal("0")
+
+    for symbol, data in portfolio.items():
+        cg_id = data["cg_id"]
+        if cg_id not in api_prices:
+            continue
+
+        curr_p = Decimal(str(api_prices[cg_id]["usd"]))
+        avg_cost = data["cost"]
+        amount = data["amount"]
+
+        item_cost = avg_cost * amount
+        item_value = curr_p * amount
+        profit_usd = item_value - item_cost
+        profit_pct = (profit_usd / item_cost * 100) if item_cost != 0 else Decimal("0")
+
+        total_cost += item_cost
+        total_value += item_value
+
+        results.append({
+            "symbol": symbol,
+            "curr_p": curr_p,
+            "avg_cost": avg_cost,
+            "profit_pct": profit_pct,
+            "profit_usd": profit_usd
+        })
+
+    total_profit_pct = ((total_value - total_cost) / total_cost * 100) if total_cost != 0 else Decimal("0")
+
+    summary = {
+        "items": results,
+        "total_value": total_value,
+        "total_cost": total_cost,
+        "total_profit_usd": total_value - total_cost,
+        "total_profit_pct": total_profit_pct
+    }
+    return summary
+
+# 3. 数据采集层 (IO)
+def fetch_prices():
+    """Fetch current prices from CoinGecko API."""
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    ids = list(COINGECKO_CONFIG.keys())
     try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"发送失败: {e}")
+        response = requests.get(url, params={"ids": ",".join(ids), "vs_currencies": "usd"}, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        print(f"Error fetching prices: {e}")
+        return None
 
-def monitor_prices():
-    # 使用公开 API，无需 Key (若请求频繁可加 API Key)
-    exchange = ccxt.binance({'enableRateLimit': True})
-    print(f"[{time.strftime('%H:%M:%S')}] 监控启动，专心刷题吧！")
-    
-    while True:
-        try:
-            for symbol, levels in WATCH_LIST.items():
-                ticker = exchange.fetch_ticker(symbol)
-                current_price = ticker['last']
-                
-                # 触发止盈/调仓点
-                if current_price >= levels['target']:
-                    msg = f"🚀 *{symbol} 达到目标价!* \n当前: {current_price}\n建议：考虑执行减仓/调仓计划。"
-                    send_tg_msg(msg)
-                    # 触发后移除，防止刷屏（或修改 levels）
-                    levels['target'] = float('inf') 
-                
-                # 触发止损点
-                elif current_price <= levels['stop']:
-                    msg = f"⚠️ *{symbol} 触发止损警报!* \n当前: {current_price}\n建议：检查基本面，执行止损。"
-                    send_tg_msg(msg)
-                    levels['stop'] = float('-inf')
+# 4. 呈现层 (UI)
+def display_portfolio(summary):
+    """Display portfolio summary in table format."""
+    header = f"{'币种':<6} {'当前价格':<14} {'持仓成本':<14} {'收益率':<10} {'浮盈(USD)':<12}"
+    print(header)
+    print("-" * len(header))
 
-            time.sleep(60) # 每分钟检查一次，不占用 CPU
-        except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(10)
+    for item in summary["items"]:
+        print(f"{item['symbol']:<6} ${item['curr_p']:<13.6f} ${item['avg_cost']:<13.6f} "
+              f"{item['profit_pct']:>8.2f}%  ${item['profit_usd']:>11.2f}")
+
+    print("-" * len(header))
+    print(f"总计资产价值: ${summary['total_value']:,.2f}")
+    print(f"总体收益率:   {summary['total_profit_pct']:.2f}%")
+    print(f"总浮盈/亏:    ${summary['total_profit_usd']:,.2f}")
 
 if __name__ == "__main__":
-    monitor_prices()
+    # 你的持仓配置
+    my_portfolio = {
+        "BTC": {"amount": Decimal("0.35644607"), "cost": Decimal("80182.99"), "cg_id": "bitcoin"},
+        "ETH": {"amount": Decimal("7.370883"), "cost": Decimal("2718.95"), "cg_id": "ethereum"},
+        "XPL": {"amount": Decimal("224821.04"), "cost": Decimal("0.1666"), "cg_id": "x-plus"},
+        "XCN": {"amount": Decimal("4533096.00"), "cost": Decimal("0.0110401"), "cg_id": "onyxcoin"}
+    }
+
+    raw_prices = fetch_prices()
+    if raw_prices:
+        stats = calculate_portfolio_metrics(my_portfolio, raw_prices)
+        display_portfolio(stats)
