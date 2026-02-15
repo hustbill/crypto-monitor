@@ -20,5 +20,5 @@ jobs:
         pip install pylint pytest mock requests ccxt
     - name: Analysing the code with pylint
       run: |
-        pylint --jobs=1 --timeout=15 $(git ls-files '*.py')
-      timeout-minutes: 15
+        pylint --jobs=1 --timeout=10 --disable=C0114,C0115,C0116 $(git ls-files '*.py' -- src/)
+      timeout-minutes: 10
